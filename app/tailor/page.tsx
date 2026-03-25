@@ -19,7 +19,7 @@ import {
 import {
   Upload, ImagePlus, Wand2, ChevronRight, Check, RotateCcw,
   AlertCircle, TrendingUp, CheckCircle2, XCircle, FileText, Download,
-  Trash2, ChevronDown, X,
+  Trash2, ChevronDown,
 } from 'lucide-react';
 
 function useApiKey() {
