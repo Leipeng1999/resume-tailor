@@ -7,7 +7,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Progress } from '@/components/ui/progress';
 import { HistoryRecord } from '@/lib/types';
-import { getHistory, deleteHistoryRecord } from '@/lib/storage';
+import { getHistory, deleteHistoryRecord, clearAllHistory } from '@/lib/storage';
 import { Search, Trash2, Clock, TrendingUp, FileText, MessageSquare, BookOpen } from 'lucide-react';
 import Link from 'next/link';
 
@@ -15,6 +15,7 @@ export default function HistoryPage() {
   const [records, setRecords] = useState<HistoryRecord[]>([]);
   const [search, setSearch] = useState('');
   const [deleteId, setDeleteId] = useState<string | null>(null);
+  const [confirmClear, setConfirmClear] = useState(false);
 
   useEffect(() => {
     setRecords(getHistory());
@@ -41,7 +42,7 @@ export default function HistoryPage() {
       </div>
 
       {/* Search */}
-      <div className="flex items-center gap-3">
+      <div className="flex flex-wrap items-center gap-3">
         <div className="relative flex-1 max-w-md">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
           <Input
@@ -52,6 +53,32 @@ export default function HistoryPage() {
           />
         </div>
         <p className="text-sm text-slate-500">{filtered.length} 条记录</p>
+        {records.length > 0 && (
+          confirmClear ? (
+            <div className="flex items-center gap-2 ml-auto">
+              <Button
+                variant="destructive"
+                size="sm"
+                onClick={() => { clearAllHistory(); setRecords([]); setConfirmClear(false); }}
+                className="text-xs h-7"
+              >
+                确认清空全部
+              </Button>
+              <Button variant="outline" size="sm" onClick={() => setConfirmClear(false)} className="text-xs h-7">
+                取消
+              </Button>
+            </div>
+          ) : (
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setConfirmClear(true)}
+              className="text-xs h-7 text-red-500 hover:text-red-600 hover:border-red-300 ml-auto"
+            >
+              <Trash2 className="w-3 h-3 mr-1" />清空所有记录
+            </Button>
+          )
+        )}
       </div>
 
       {records.length === 0 ? (

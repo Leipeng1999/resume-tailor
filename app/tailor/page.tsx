@@ -12,10 +12,14 @@ import RefineInput from '@/components/RefineInput';
 import { LoadingSpinner, CardSkeleton } from '@/components/Loadingskeleton';
 import { showToast } from '@/components/Toast';
 import { ParsedJD, TailoredResume, MatchScore, ResumeDiff } from '@/lib/types';
-import { getApiKey, saveCurrentResume, getCurrentResume, saveParsedJD } from '@/lib/storage';
+import {
+  getApiKey, saveCurrentResume, getCurrentResume, saveParsedJD,
+  getParsedJDs, deleteParsedJD,
+} from '@/lib/storage';
 import {
   Upload, ImagePlus, Wand2, ChevronRight, Check, RotateCcw,
   AlertCircle, TrendingUp, CheckCircle2, XCircle, FileText, Download,
+  Trash2, ChevronDown, X,
 } from 'lucide-react';
 
 function useApiKey() {
@@ -24,15 +28,25 @@ function useApiKey() {
   return key;
 }
 
+type JDImageItem = { id: string; preview: string; base64: string; mediaType: string };
+
 export default function TailorPage() {
   const jdImageId   = useId();
   const resumeFileId = useId();
 
   const [jdText,        setJdText]        = useState('');
   const [parsedJD,      setParsedJD]      = useState<ParsedJD | null>(null);
-  const [parseLoading,  setParseLoading]  = useState(false);
-  const [imageLoading,  setImageLoading]  = useState(false);
-  const [jdDragOver,    setJdDragOver]    = useState(false);
+  const [parseLoading,     setParseLoading]     = useState(false);
+  const [autoProcessing,   setAutoProcessing]   = useState(false);
+  const [autoProcessMsg,   setAutoProcessMsg]   = useState('');
+  const [jdDragOver,       setJdDragOver]       = useState(false);
+
+  // Multi-image queue
+  const [jdImages,      setJdImages]      = useState<JDImageItem[]>([]);
+
+  // Saved JD list
+  const [savedJDs,      setSavedJDs]      = useState<ParsedJD[]>([]);
+  const [showJdList,    setShowJdList]    = useState(false);
 
   const [resumeText,    setResumeText]    = useState('');
   const [resumeLoading, setResumeLoading] = useState(false);
@@ -54,6 +68,7 @@ export default function TailorPage() {
   useEffect(() => {
     const saved = getCurrentResume();
     if (saved) setResumeText(saved);
+    setSavedJDs(getParsedJDs());
   }, []);
 
   function checkApiKey(): boolean {
@@ -65,34 +80,63 @@ export default function TailorPage() {
     return true;
   }
 
-  /* ── Shared image processing ──────────────────────────── */
-  const processJDImageFile = useCallback(async (file: File) => {
+  /* ── Auto: add images → OCR → parse JD ───────────────── */
+  const addToImageQueue = useCallback(async (files: File[]) => {
     if (!checkApiKey()) return;
-    setImageLoading(true);
-    setError('');
-    showToast('正在识别图片文字...', 'info');
-    try {
+    const newImages: JDImageItem[] = [];
+    for (const file of files) {
       const buffer = await file.arrayBuffer();
       const bytes = new Uint8Array(buffer);
       let binary = '';
       bytes.forEach((b) => { binary += String.fromCharCode(b); });
       const base64 = btoa(binary);
-      const mediaType = (file.type || 'image/jpeg') as 'image/jpeg' | 'image/png' | 'image/webp';
-      const res = await fetch('/api/parse-jd-image', {
+      const mediaType = file.type || 'image/jpeg';
+      const preview = URL.createObjectURL(file);
+      const id = `img-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+      newImages.push({ id, preview, base64, mediaType });
+    }
+    setJdImages(newImages);
+    setAutoProcessing(true);
+    setError('');
+
+    try {
+      // Step 1: OCR
+      setAutoProcessMsg(`正在识别 ${newImages.length} 张截图...`);
+      const images = newImages.map((img) => ({
+        base64: img.base64,
+        mediaType: img.mediaType as 'image/jpeg' | 'image/png' | 'image/webp',
+      }));
+      const ocrRes = await fetch('/api/parse-jd-image', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ imageBase64: base64, mediaType, apiKey }),
+        body: JSON.stringify({ images, apiKey }),
       });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error);
-      setJdText(data.text);
-      showToast('图片文字识别成功，已填入 JD 文本框', 'success');
+      const ocrData = await ocrRes.json();
+      if (!ocrRes.ok) throw new Error(ocrData.error);
+      const extractedText = ocrData.text;
+      setJdText(extractedText);
+
+      // Step 2: Parse JD
+      setAutoProcessMsg('正在解析 JD 内容...');
+      const parseRes = await fetch('/api/parse-jd', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ jdText: extractedText, apiKey }),
+      });
+      const parseData = await parseRes.json();
+      if (!parseRes.ok) throw new Error(parseData.error);
+      setParsedJD(parseData);
+      saveParsedJD(parseData);
+      setSavedJDs(getParsedJDs());
+      showToast('截图识别并解析 JD 完成！', 'success');
     } catch (e: unknown) {
-      const msg = e instanceof Error ? e.message : '图片识别失败';
+      const msg = e instanceof Error ? e.message : '识别或解析失败';
       setError(msg);
       showToast(msg, 'error');
     } finally {
-      setImageLoading(false);
+      setAutoProcessing(false);
+      setAutoProcessMsg('');
+      setJdImages((prev) => { prev.forEach((i) => URL.revokeObjectURL(i.preview)); return []; });
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [apiKey]);
@@ -123,9 +167,9 @@ export default function TailorPage() {
 
   /* ── File input handlers ──────────────────────────────── */
   const handleJDImage = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    await processJDImageFile(file);
+    const files = Array.from(e.target.files || []);
+    if (!files.length) return;
+    await addToImageQueue(files);
     e.target.value = '';
   };
 
@@ -142,7 +186,7 @@ export default function TailorPage() {
       if (item.type.startsWith('image/')) {
         e.preventDefault();
         const file = item.getAsFile();
-        if (file) await processJDImageFile(file);
+        if (file) await addToImageQueue([file]);
         return;
       }
     }
@@ -157,8 +201,8 @@ export default function TailorPage() {
   const handleJdDrop = async (e: React.DragEvent) => {
     e.preventDefault();
     setJdDragOver(false);
-    const file = Array.from(e.dataTransfer.files).find((f) => f.type.startsWith('image/'));
-    if (file) await processJDImageFile(file);
+    const files = Array.from(e.dataTransfer.files).filter((f) => f.type.startsWith('image/'));
+    if (files.length > 0) await addToImageQueue(files);
   };
 
   /* ── Resume drag-and-drop ─────────────────────────────── */
@@ -191,6 +235,7 @@ export default function TailorPage() {
       if (!res.ok) throw new Error(data.error);
       setParsedJD(data);
       saveParsedJD(data);
+      setSavedJDs(getParsedJDs());
       showToast('JD 解析完成！', 'success');
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : '解析失败';
@@ -267,6 +312,15 @@ export default function TailorPage() {
     }
   };
 
+  /* ── JD record delete ─────────────────────────────────── */
+  const handleDeleteJD = (index: number) => {
+    const jd = savedJDs[index];
+    if (!confirm(`确认删除 ${jd.companyName ? jd.companyName + ' - ' : ''}${jd.jobTitle} 的记录？`)) return;
+    deleteParsedJD(index);
+    setSavedJDs(getParsedJDs());
+    showToast('JD 记录已删除', 'success');
+  };
+
   const acceptedCount  = diffs.filter((d) => d.accepted && d.type !== 'unchanged').length;
   const modifiedCount  = diffs.filter((d) => d.type !== 'unchanged').length;
   const unchangedCount = diffs.filter((d) => d.type === 'unchanged').length;
@@ -281,7 +335,7 @@ export default function TailorPage() {
       {error && (
         <div className="flex items-center justify-between gap-2 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
           <span className="flex items-center gap-2"><AlertCircle className="h-4 w-4 shrink-0" />{error}</span>
-          {(error.includes('定制') || error.includes('JSON')) && (
+          {parsedJD && resumeText && (
             <button
               type="button"
               onClick={() => { setError(''); handleTailor(); }}
@@ -311,18 +365,16 @@ export default function TailorPage() {
                   <span>职位描述 (JD)</span>
                   <label
                     htmlFor={jdImageId}
-                    className={`inline-flex cursor-pointer items-center gap-1.5 rounded-md border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium text-slate-600 shadow-sm transition hover:border-teal-300 hover:bg-teal-50 hover:text-teal-700 ${imageLoading ? 'pointer-events-none opacity-60' : ''}`}
+                    className={`inline-flex cursor-pointer items-center gap-1.5 rounded-md border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium text-slate-600 shadow-sm transition hover:border-teal-300 hover:bg-teal-50 hover:text-teal-700 ${autoProcessing ? 'pointer-events-none opacity-60' : ''}`}
                   >
-                    {imageLoading
-                      ? <span className="h-3 w-3 animate-spin rounded-full border-2 border-teal-500 border-t-transparent" />
-                      : <ImagePlus className="h-3.5 w-3.5" />
-                    }
-                    上传截图识别
+                    <ImagePlus className="h-3.5 w-3.5" />
+                    上传截图（可多选）
                     <input
                       id={jdImageId}
                       ref={jdImageRef}
                       type="file"
                       accept="image/jpeg,image/png,image/webp"
+                      multiple
                       className="hidden"
                       onChange={handleJDImage}
                     />
@@ -337,9 +389,34 @@ export default function TailorPage() {
                   placeholder="粘贴 JD 文字内容，或拖拽/Ctrl+V 粘贴截图自动识别..."
                   className="min-h-[200px] font-mono text-sm"
                 />
+
+                {/* Auto-processing loading state */}
+                {autoProcessing && (
+                  <div className="space-y-2">
+                    {jdImages.length > 0 && (
+                      <div className="flex flex-wrap gap-2">
+                        {jdImages.map((img) => (
+                          <div key={img.id} className="relative">
+                            {/* eslint-disable-next-line @next/next/no-img-element */}
+                            <img
+                              src={img.preview}
+                              alt="截图预览"
+                              className="h-16 w-16 rounded-lg border border-violet-200 object-cover opacity-70"
+                            />
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                    <div className="flex items-center gap-2 rounded-lg border border-violet-100 bg-violet-50 px-3 py-2.5 text-sm text-violet-700">
+                      <span className="h-4 w-4 shrink-0 animate-spin rounded-full border-2 border-violet-500 border-t-transparent" />
+                      {autoProcessMsg || '正在识别截图并解析 JD...'}
+                    </div>
+                  </div>
+                )}
+
                 <div className="flex items-center gap-2 text-xs text-slate-400">
                   <ImagePlus className="h-3 w-3" />
-                  支持拖拽截图到此区域 · 或 Ctrl+V 粘贴截图 · 或点击右上角按钮上传
+                  拖拽/Ctrl+V/上传截图后自动识别并解析 JD · 支持多张合并识别
                 </div>
                 <Button
                   type="button"
@@ -360,8 +437,8 @@ export default function TailorPage() {
               <div className="absolute inset-0 z-20 flex items-center justify-center rounded-xl border-2 border-dashed border-teal-500 bg-teal-50/95 pointer-events-none">
                 <div className="text-center">
                   <ImagePlus className="mx-auto mb-2 h-10 w-10 text-teal-500" />
-                  <p className="text-sm font-medium text-teal-700">松开以识别截图</p>
-                  <p className="mt-1 text-xs text-teal-600">支持 JPG、PNG、WebP</p>
+                  <p className="text-sm font-medium text-teal-700">松开以自动识别截图并解析 JD</p>
+                  <p className="mt-1 text-xs text-teal-600">支持 JPG、PNG、WebP，可多张</p>
                 </div>
               </div>
             )}
@@ -376,11 +453,11 @@ export default function TailorPage() {
                 </CardTitle>
               </CardHeader>
               <CardContent className="space-y-3 text-sm">
-                {parsedJD.coreSkills.length > 0 && (
+                {(parsedJD.coreSkills || []).length > 0 && (
                   <div>
                     <p className="mb-1 font-medium text-slate-700">核心技能</p>
                     <div className="flex flex-wrap gap-1.5">
-                      {parsedJD.coreSkills.map((s) => <Badge key={s} variant="secondary" className="text-xs">{s}</Badge>)}
+                      {(parsedJD.coreSkills || []).map((s) => <Badge key={s} variant="secondary" className="text-xs">{s}</Badge>)}
                     </div>
                   </div>
                 )}
@@ -390,26 +467,66 @@ export default function TailorPage() {
                     <p className="text-slate-600">{parsedJD.educationExperience}</p>
                   </div>
                 )}
-                {parsedJD.industryKeywords.length > 0 && (
+                {(parsedJD.industryKeywords || []).length > 0 && (
                   <div>
                     <p className="mb-1 font-medium text-slate-700">行业关键词</p>
                     <div className="flex flex-wrap gap-1.5">
-                      {parsedJD.industryKeywords.map((k) => (
+                      {(parsedJD.industryKeywords || []).map((k) => (
                         <Badge key={k} className="bg-teal-100 text-teal-800 hover:bg-teal-200 text-xs">{k}</Badge>
                       ))}
                     </div>
                   </div>
                 )}
-                {parsedJD.niceToHave.length > 0 && (
+                {(parsedJD.niceToHave || []).length > 0 && (
                   <div>
                     <p className="mb-1 font-medium text-slate-700">加分项</p>
                     <div className="flex flex-wrap gap-1.5">
-                      {parsedJD.niceToHave.map((n) => <Badge key={n} variant="outline" className="text-xs">{n}</Badge>)}
+                      {(parsedJD.niceToHave || []).map((n) => <Badge key={n} variant="outline" className="text-xs">{n}</Badge>)}
                     </div>
                   </div>
                 )}
               </CardContent>
             </Card>
+          )}
+
+          {/* Saved JD list */}
+          {savedJDs.length > 0 && (
+            <div className="space-y-2">
+              <button
+                type="button"
+                onClick={() => setShowJdList((v) => !v)}
+                className="flex items-center gap-2 text-sm text-slate-500 hover:text-slate-700 transition-colors cursor-pointer"
+              >
+                <ChevronDown className={`h-3.5 w-3.5 transition-transform ${showJdList ? 'rotate-180' : ''}`} />
+                历史 JD 记录（{savedJDs.length} 条）— 点击快速加载
+              </button>
+              {showJdList && (
+                <div className="space-y-1 rounded-xl border border-slate-200 bg-white p-3">
+                  {savedJDs.map((jd, i) => (
+                    <div key={i} className="flex items-center gap-1">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setJdText(jd.rawText || '');
+                          setParsedJD(jd);
+                          showToast('JD 已加载', 'success');
+                        }}
+                        className="flex-1 text-left text-sm text-slate-700 hover:text-teal-700 transition-colors cursor-pointer truncate rounded-l-lg border border-slate-200 bg-slate-50 hover:bg-teal-50 px-3 py-2"
+                      >
+                        {jd.companyName ? `${jd.companyName} — ` : ''}{jd.jobTitle}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleDeleteJD(i)}
+                        className="shrink-0 rounded-r-lg border border-l-0 border-slate-200 bg-slate-50 px-2 py-2 text-slate-400 hover:bg-red-50 hover:text-red-500 hover:border-red-200 transition-colors cursor-pointer"
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
           )}
         </div>
 
@@ -502,14 +619,14 @@ export default function TailorPage() {
             )}
           </div>
 
-          {tailored?.suggestions && tailored.suggestions.length > 0 && (
+          {tailored?.suggestions && (tailored.suggestions || []).length > 0 && (
             <Card className="border-blue-100 bg-blue-50/40">
               <CardHeader className="pb-2">
                 <CardTitle className="text-sm text-blue-800">💡 AI 建议补充</CardTitle>
               </CardHeader>
               <CardContent>
                 <ul className="space-y-1">
-                  {tailored.suggestions.map((s, i) => (
+                  {(tailored.suggestions || []).map((s, i) => (
                     <li key={i} className="flex items-start gap-1.5 text-sm text-blue-700">
                       <span className="mt-0.5 shrink-0">•</span>{s}
                     </li>
@@ -707,7 +824,7 @@ export default function TailorPage() {
                 <div className="grid grid-cols-1 gap-4 text-sm md:grid-cols-2">
                   <div>
                     <p className="mb-2 flex items-center gap-1 font-medium text-green-700">
-                      <CheckCircle2 className="h-4 w-4" />已匹配关键词 ({matchScore.matchedKeywords.length})
+                      <CheckCircle2 className="h-4 w-4" />已匹配关键词 ({(matchScore.matchedKeywords || []).length})
                     </p>
                     <div className="flex flex-wrap gap-1.5">
                       {(matchScore.matchedKeywords || []).map((k) => (
@@ -717,7 +834,7 @@ export default function TailorPage() {
                   </div>
                   <div>
                     <p className="mb-2 flex items-center gap-1 font-medium text-red-700">
-                      <XCircle className="h-4 w-4" />缺失关键词 ({matchScore.missingKeywords.length})
+                      <XCircle className="h-4 w-4" />缺失关键词 ({(matchScore.missingKeywords || []).length})
                     </p>
                     <div className="flex flex-wrap gap-1.5">
                       {(matchScore.missingKeywords || []).map((k) => (

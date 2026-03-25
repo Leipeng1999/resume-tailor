@@ -3,9 +3,10 @@
 import { useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
-import { Sparkles } from 'lucide-react';
+import { Sparkles, RotateCcw } from 'lucide-react';
 import { LoadingSpinner } from './Loadingskeleton';
 import { getApiKey } from '@/lib/storage';
+import { showToast } from '@/components/Toast';
 
 interface RefineInputProps {
   currentContent: string;
@@ -57,8 +58,16 @@ export default function RefineInput({
 
       onRefined(data.refinedContent, data.changes || []);
       setFeedback('');
+      // For interview type, changes[0].description contains which section was updated
+      const firstChange = (data.changes || [])[0] as Record<string, string> | undefined;
+      const summary = firstChange?.description
+        ? `已更新 · ${firstChange.section ? firstChange.section + '：' : ''}${firstChange.description}`
+        : '已更新！';
+      showToast(summary, 'success');
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : '优化失败，请重试');
+      const msg = err instanceof Error ? err.message : '优化失败，请重试';
+      setError(msg);
+      showToast(msg, 'error');
     } finally {
       setLoading(false);
     }
@@ -81,7 +90,21 @@ export default function RefineInput({
             placeholder={placeholder || defaultPlaceholder}
             className="min-h-[80px] text-sm bg-white border-orange-200 focus-visible:ring-orange-300"
           />
-          {error && <p className="text-sm text-red-500">{error}</p>}
+          {error && (
+            <div className="flex items-center justify-between gap-2 rounded-lg bg-red-50 border border-red-200 px-3 py-2">
+              <p className="text-sm text-red-600">{error}</p>
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                onClick={handleRefine}
+                className="shrink-0 border-red-300 text-red-600 hover:bg-red-50 gap-1 text-xs"
+              >
+                <RotateCcw className="w-3 h-3" />
+                重试
+              </Button>
+            </div>
+          )}
           <div className="flex justify-end">
             <Button
               type="button"

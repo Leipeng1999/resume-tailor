@@ -11,21 +11,29 @@ import CopyButton from '@/components/CopyButton';
 import RefineInput from '@/components/RefineInput';
 import { showToast } from '@/components/Toast';
 import { InterviewPrep, ParsedJD, InterviewRound } from '@/lib/types';
-import { getApiKey, getParsedJDs } from '@/lib/storage';
+import { getApiKey, getParsedJDs, deleteParsedJD } from '@/lib/storage';
 import {
   BookOpen, Upload, Building2, User, MessageCircle, HelpCircle,
-  AlertCircle, Download, X, FileText, ChevronDown,
-  Lightbulb, Target, Star, Brain, TrendingUp, ShieldAlert, Check,
+  AlertCircle, Download, X, FileText, ChevronDown, RotateCcw,
+  Lightbulb, Target, Star, Brain, TrendingUp, ShieldAlert, Check, Trash2,
 } from 'lucide-react';
+import type { SectionKey } from '@/app/api/generate-interview-prep/route';
 
 // ── Types ─────────────────────────────────────────────────
 type PartialPrep = Partial<InterviewPrep>;
 
-const STEPS = [
-  { label: '公司背景 & 岗位匹配', desc: '正在生成公司背景与岗位分析...' },
-  { label: '核心面试问答',         desc: '正在生成 8-9 道面试问答...' },
-  { label: 'STAR 故事库',          desc: '正在生成 STAR 故事库...' },
-  { label: '策略 & 建议',          desc: '正在生成策略、薪资与注意事项...' },
+// ── Section config (10 sections) ──────────────────────────
+const SECTIONS: { key: SectionKey; label: string; shortLabel: string; desc: string }[] = [
+  { key: 'companyBackground', label: '公司背景',        shortLabel: '公司背景', desc: '正在分析公司背景...' },
+  { key: 'jobMatch',          label: '岗位匹配分析',    shortLabel: '岗位匹配', desc: '正在分析岗位匹配...' },
+  { key: 'selfIntroduction',  label: '自我介绍',        shortLabel: '自我介绍', desc: '正在生成自我介绍...' },
+  { key: 'coreQA',            label: '核心面试问答',    shortLabel: '面试问答', desc: '正在生成面试问答...' },
+  { key: 'starStories',       label: 'STAR 故事库',     shortLabel: 'STAR故事', desc: '正在生成 STAR 故事...' },
+  { key: 'aiCapabilities',    label: 'AI 能力',         shortLabel: 'AI能力',   desc: '正在生成 AI 能力板块...' },
+  { key: 'questionsToAsk',    label: '主动提问清单',    shortLabel: '提问清单', desc: '正在生成提问清单...' },
+  { key: 'strategy',          label: '面试核心策略',    shortLabel: '面试策略', desc: '正在生成面试策略...' },
+  { key: 'salaryNegotiation', label: '薪资谈判建议',    shortLabel: '薪资谈判', desc: '正在生成薪资建议...' },
+  { key: 'warningsAndTraps',  label: '注意事项与常见陷阱', shortLabel: '注意事项', desc: '正在生成注意事项...' },
 ];
 
 const roundOptions: { value: InterviewRound; label: string }[] = [
@@ -37,29 +45,49 @@ const roundOptions: { value: InterviewRound; label: string }[] = [
 type PrepFile = { id: string; name: string; size: number; text: string };
 
 // ── Progress Bar ──────────────────────────────────────────
-function ProgressBar({ step, totalSteps }: { step: number; totalSteps: number }) {
+function ProgressBar({
+  generatingSectionKey, failedSections, prep,
+}: {
+  generatingSectionKey: SectionKey | null;
+  failedSections: SectionKey[];
+  prep: PartialPrep;
+}) {
+  const currentIdx = generatingSectionKey
+    ? SECTIONS.findIndex((s) => s.key === generatingSectionKey)
+    : -1;
+  const doneCount = SECTIONS.filter((s) => s.key in prep).length;
+
   return (
     <div className="rounded-xl border border-teal-200 bg-teal-50 px-4 py-4 space-y-3">
       <div className="flex items-center justify-between">
         <span className="text-sm font-semibold text-teal-700">
-          {step <= totalSteps
-            ? `第 ${step} / ${totalSteps} 段：${STEPS[step - 1]?.desc}`
+          {generatingSectionKey
+            ? `第 ${currentIdx + 1}/10 板块：${SECTIONS[currentIdx]?.desc}`
+            : failedSections.length > 0
+            ? `已完成，${failedSections.length} 个板块失败`
             : '全部生成完成 ✓'}
         </span>
-        <span className="text-xs text-teal-500">{Math.min(step - 1, totalSteps)} / {totalSteps} 完成</span>
+        <span className="text-xs text-teal-500">已完成 {doneCount} / 10 板块</span>
       </div>
-      <div className="flex gap-2">
-        {STEPS.map((s, i) => {
-          const done    = i + 1 < step;
-          const active  = i + 1 === step;
+      <div className="flex gap-1">
+        {SECTIONS.map((s) => {
+          const isDone   = s.key in prep;
+          const isActive = s.key === generatingSectionKey;
+          const isFailed = failedSections.includes(s.key);
           return (
-            <div key={i} className="flex-1 flex flex-col items-center gap-1">
+            <div key={s.key} className="flex-1 flex flex-col items-center gap-1">
               <div className={`h-1.5 w-full rounded-full transition-all duration-500 ${
-                done ? 'bg-teal-600' : active ? 'bg-teal-400 animate-pulse' : 'bg-slate-200'
+                isDone   ? 'bg-teal-600' :
+                isActive ? 'bg-teal-400 animate-pulse' :
+                isFailed ? 'bg-red-400' :
+                'bg-slate-200'
               }`} />
-              <span className={`text-xs truncate w-full text-center ${
-                done ? 'text-teal-700 font-medium' : active ? 'text-teal-500' : 'text-slate-400'
-              }`}>{s.label}</span>
+              <span className={`text-[10px] truncate w-full text-center hidden lg:block ${
+                isDone   ? 'text-teal-700 font-medium' :
+                isActive ? 'text-teal-500' :
+                isFailed ? 'text-red-500' :
+                'text-slate-400'
+              }`}>{s.shortLabel}</span>
             </div>
           );
         })}
@@ -68,23 +96,25 @@ function ProgressBar({ step, totalSteps }: { step: number; totalSteps: number })
   );
 }
 
-// ── Accordion Section ────────────────────────────────────
+// ── Accordion Section ─────────────────────────────────────
 function Section({
-  icon, title, badge, copyText, defaultOpen = false, loading = false, children,
+  icon, title, badge, copyText, defaultOpen = false,
+  loading = false, failed = false, onRetry, children,
 }: {
   icon: React.ReactNode; title: string; badge?: string; copyText?: string;
-  defaultOpen?: boolean; loading?: boolean; children: React.ReactNode;
+  defaultOpen?: boolean; loading?: boolean; failed?: boolean; onRetry?: () => void;
+  children: React.ReactNode;
 }) {
   const [open, setOpen] = useState(defaultOpen);
   return (
-    <div className="rounded-xl border border-slate-200 overflow-hidden bg-white">
+    <div className={`rounded-xl border overflow-hidden bg-white ${failed ? 'border-red-200' : 'border-slate-200'}`}>
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
         className="w-full flex items-center justify-between px-4 py-3.5 hover:bg-slate-50 transition-colors"
       >
         <div className="flex items-center gap-2.5 text-left">
-          <span className="text-teal-600">{icon}</span>
+          <span className={failed ? 'text-red-400' : 'text-teal-600'}>{icon}</span>
           <span className="font-semibold text-slate-800 text-sm">{title}</span>
           {badge && <Badge className="text-xs bg-teal-100 text-teal-700">{badge}</Badge>}
           {loading && (
@@ -93,9 +123,22 @@ function Section({
               生成中...
             </span>
           )}
+          {failed && <span className="text-xs text-red-500 font-medium">生成失败</span>}
         </div>
         <div className="flex items-center gap-2 shrink-0 ml-3">
-          {copyText && !loading && (
+          {failed && onRetry && (
+            <span onClick={(e) => e.stopPropagation()}>
+              <button
+                type="button"
+                onClick={onRetry}
+                className="flex items-center gap-1 rounded-md border border-red-300 bg-white px-2 py-1 text-xs font-medium text-red-600 hover:bg-red-50 transition-colors cursor-pointer"
+              >
+                <RotateCcw className="w-3 h-3" />
+                重新生成
+              </button>
+            </span>
+          )}
+          {copyText && !loading && !failed && (
             <span onClick={(e) => e.stopPropagation()}>
               <CopyButton text={copyText} variant="ghost" />
             </span>
@@ -105,9 +148,23 @@ function Section({
       </button>
       {open && (
         <div className="px-4 pb-4 pt-2 border-t border-slate-100 space-y-3 text-sm text-slate-700">
-          {loading
-            ? <div className="py-6 text-center text-sm text-slate-400">正在生成，请稍候...</div>
-            : children}
+          {loading ? (
+            <div className="py-6 text-center text-sm text-slate-400">正在生成，请稍候...</div>
+          ) : failed ? (
+            <div className="py-6 text-center space-y-2">
+              <p className="text-sm text-red-400">该板块生成失败</p>
+              {onRetry && (
+                <button
+                  type="button"
+                  onClick={onRetry}
+                  className="flex items-center gap-1.5 mx-auto rounded-md border border-red-300 bg-white px-3 py-1.5 text-xs font-medium text-red-600 hover:bg-red-50 transition-colors cursor-pointer"
+                >
+                  <RotateCcw className="w-3 h-3" />
+                  点击重新生成
+                </button>
+              )}
+            </div>
+          ) : children}
         </div>
       )}
     </div>
@@ -149,7 +206,7 @@ async function downloadDocx(
   }
 }
 
-// ── Page ─────────────────────────────────────────────────
+// ── Page ──────────────────────────────────────────────────
 export default function InterviewPage() {
   const [jdText,           setJdText]           = useState('');
   const [selectedJDIndex,  setSelectedJDIndex]  = useState<number>(-1);
@@ -160,11 +217,13 @@ export default function InterviewPage() {
   const [extraText,        setExtraText]         = useState('');
 
   // generation state
-  const [step,       setStep]       = useState(0); // 0=idle 1-4=generating 5=done
-  const [prep,       setPrep]       = useState<PartialPrep>({});
-  const [error,      setError]      = useState('');
-  const [exporting,  setExporting]  = useState(false);
-  const [prepDragOver, setPrepDragOver] = useState(false);
+  const [generatingSectionKey, setGeneratingSectionKey] = useState<SectionKey | null>(null);
+  const [isGeneratingAll,      setIsGeneratingAll]      = useState(false);
+  const [failedSections,       setFailedSections]       = useState<SectionKey[]>([]);
+  const [prep,                 setPrep]                 = useState<PartialPrep>({});
+  const [error,                setError]                = useState('');
+  const [exporting,            setExporting]            = useState(false);
+  const [prepDragOver,         setPrepDragOver]         = useState(false);
 
   const prepFileId = useId();
   const [apiKey,   setApiKey]   = useState('');
@@ -175,7 +234,18 @@ export default function InterviewPage() {
     setSavedJDs(getParsedJDs());
   }, []);
 
-  // ── File parsing ────────────────────────────────────────
+  // ── JD delete ────────────────────────────────────────────
+  const handleDeleteJD = (index: number) => {
+    const jd = savedJDs[index];
+    if (!confirm(`确认删除 ${jd.companyName ? jd.companyName + ' - ' : ''}${jd.jobTitle} 的记录？`)) return;
+    deleteParsedJD(index);
+    setSavedJDs(getParsedJDs());
+    if (selectedJDIndex === index) setSelectedJDIndex(-1);
+    else if (selectedJDIndex > index) setSelectedJDIndex(selectedJDIndex - 1);
+    showToast('JD 记录已删除', 'success');
+  };
+
+  // ── File parsing ─────────────────────────────────────────
   const parseFiles = async (files: File[]) => {
     for (const file of files) {
       const fd = new FormData();
@@ -198,7 +268,11 @@ export default function InterviewPage() {
   const handleDrop = async (e: React.DragEvent) => {
     e.preventDefault(); setPrepDragOver(false);
     const files = Array.from(e.dataTransfer.files).filter((f) => /\.(pdf|docx?|txt)$/i.test(f.name));
-    if (files.length) { showToast(`正在解析 ${files.length} 个文件...`, 'info'); await parseFiles(files); showToast('文件解析完成', 'success'); }
+    if (files.length) {
+      showToast(`正在解析 ${files.length} 个文件...`, 'info');
+      await parseFiles(files);
+      showToast('文件解析完成', 'success');
+    }
   };
 
   const removeFile = (id: string) => setPrepFiles((p) => p.filter((f) => f.id !== id));
@@ -208,72 +282,107 @@ export default function InterviewPage() {
     ...(extraText.trim() ? [extraText] : []),
   ].join('\n\n');
 
-  // ── JD helpers ──────────────────────────────────────────
+  // ── JD helpers ───────────────────────────────────────────
   const getActiveParsedJD = (): ParsedJD | null => {
     if (selectedJDIndex >= 0 && savedJDs[selectedJDIndex]) return savedJDs[selectedJDIndex];
     if (jdText.trim()) return { jobTitle: companyName || '目标岗位', companyName: companyName || '', coreSkills: [], educationExperience: '', industryKeywords: [], niceToHave: [], rawText: jdText };
     return null;
   };
 
-  const activeJD      = getActiveParsedJD();
+  const activeJD       = getActiveParsedJD();
   const displayCompany = companyName || activeJD?.companyName || '目标公司';
   const displayJob     = activeJD?.jobTitle || '目标岗位';
 
-  // ── Call one segment ────────────────────────────────────
-  const callSegment = async (seg: 1 | 2 | 3 | 4, parsedJD: ParsedJD): Promise<Partial<InterviewPrep>> => {
+  // ── Call one section ─────────────────────────────────────
+  const callSection = async (
+    sectionKey: SectionKey,
+    parsedJD: ParsedJD,
+    completedSectionTitles: string[],
+  ): Promise<Partial<InterviewPrep>> => {
     const res = await fetch('/api/generate-interview-prep', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ parsedJD, prepFiles: combinedPrepText, companyName, interviewRound, interviewerTitle, apiKey, segment: seg }),
+      body: JSON.stringify({
+        parsedJD, prepFiles: combinedPrepText, companyName,
+        interviewRound, interviewerTitle, apiKey,
+        section: sectionKey,
+        completedSectionTitles,
+      }),
     });
     const data = await res.json();
-    if (!res.ok) throw new Error(data.error || `第${seg}段生成失败`);
+    if (!res.ok) throw new Error(data.error || `${sectionKey} 生成失败`);
     return data;
   };
 
-  // ── Main generate ───────────────────────────────────────
+  // ── Generate all 10 sections ─────────────────────────────
   const handleGenerate = async () => {
     const parsedJD = getActiveParsedJD();
     if (!parsedJD) { showToast('请先选择或输入 JD 信息', 'info'); setError('请先选择或输入 JD 信息'); return; }
     if (!apiKey)   { showToast('请先配置 Anthropic API Key', 'error'); setError('未配置 API Key'); return; }
 
-    setError(''); setPrep({}); setStep(1);
+    setError('');
+    setPrep({});
+    setFailedSections([]);
+    setIsGeneratingAll(true);
 
-    try {
-      // Segment 1 ─ company + job match + self intro
-      setStep(1);
-      const s1 = await callSegment(1, parsedJD);
-      setPrep((p) => ({ ...p, ...s1 }));
-      showToast('公司背景生成完成', 'success');
+    const failed: SectionKey[]      = [];
+    const completedTitles: string[] = [];
 
-      // Segment 2 ─ core Q&A
-      setStep(2);
-      const s2 = await callSegment(2, parsedJD);
-      setPrep((p) => ({ ...p, ...s2 }));
-      showToast('面试问答生成完成', 'success');
+    for (const sec of SECTIONS) {
+      setGeneratingSectionKey(sec.key);
+      try {
+        const data = await callSection(sec.key, parsedJD, completedTitles);
+        setPrep((p) => ({ ...p, ...data }));
+        completedTitles.push(sec.label);
+      } catch (e: unknown) {
+        failed.push(sec.key);
+        const msg = e instanceof Error ? e.message : `${sec.label} 生成失败`;
+        showToast(`${sec.label} 生成失败，继续下一板块...`, 'error');
+        console.error(`Section ${sec.key} failed:`, msg);
+      }
+    }
 
-      // Segment 3 ─ STAR stories + AI capabilities
-      setStep(3);
-      const s3 = await callSegment(3, parsedJD);
-      setPrep((p) => ({ ...p, ...s3 }));
-      showToast('STAR 故事库生成完成', 'success');
+    setGeneratingSectionKey(null);
+    setIsGeneratingAll(false);
+    setFailedSections(failed);
 
-      // Segment 4 ─ questions + strategy + salary + warnings
-      setStep(4);
-      const s4 = await callSegment(4, parsedJD);
-      setPrep((p) => ({ ...p, ...s4 }));
-      showToast('面试准备手册全部生成完成！🎉', 'success');
-
-      setStep(5);
-    } catch (e: unknown) {
-      const msg = e instanceof Error ? e.message : '生成失败，请重试';
-      setError(msg); showToast(msg, 'error'); setStep(0);
+    if (failed.length === 0) {
+      showToast('面试手册全部生成完成！🎉', 'success');
+    } else {
+      const names = failed.map((k) => SECTIONS.find((s) => s.key === k)?.label).filter(Boolean).join('、');
+      setError(`${failed.length} 个板块生成失败（${names}），可单独点击「重新生成」重试`);
     }
   };
 
-  const isGenerating = step >= 1 && step <= 4;
-  const isDone       = step === 5;
+  // ── Retry a single failed section ────────────────────────
+  const handleRetrySection = async (sectionKey: SectionKey) => {
+    const parsedJD = getActiveParsedJD();
+    if (!parsedJD || !apiKey) return;
+
+    setFailedSections((prev) => prev.filter((k) => k !== sectionKey));
+    setGeneratingSectionKey(sectionKey);
+
+    try {
+      const completedTitles = SECTIONS
+        .filter((s) => s.key in prep && s.key !== sectionKey)
+        .map((s) => s.label);
+      const data = await callSection(sectionKey, parsedJD, completedTitles);
+      setPrep((p) => ({ ...p, ...data }));
+      const label = SECTIONS.find((s) => s.key === sectionKey)?.label ?? sectionKey;
+      showToast(`${label} 生成完成`, 'success');
+      setError('');
+    } catch (e: unknown) {
+      setFailedSections((prev) => [...prev, sectionKey]);
+      const msg = e instanceof Error ? e.message : '生成失败';
+      showToast(msg, 'error');
+    } finally {
+      setGeneratingSectionKey(null);
+    }
+  };
+
+  const isGenerating = isGeneratingAll || generatingSectionKey !== null;
   const hasAny       = Object.keys(prep).length > 0;
+  const isDone       = !isGenerating && hasAny;
 
   const fullContent = hasAny ? JSON.stringify(prep, null, 2) : '';
 
@@ -289,16 +398,27 @@ export default function InterviewPage() {
     general: '通用问题', technical: '专业问题', behavioral: '行为面试（STAR）',
   };
 
+  // helper: is a specific section visible?
+  const showSection = (key: SectionKey) =>
+    key in prep || generatingSectionKey === key || failedSections.includes(key);
+
   return (
     <div className="space-y-6">
       <div>
         <h1 className="text-2xl font-bold text-slate-900">面试准备手册生成器</h1>
-        <p className="text-slate-500 mt-1">分段生成专业面试手册，包含公司调研、自我介绍、问答话术、STAR故事等10大板块</p>
+        <p className="text-slate-500 mt-1">逐板块生成专业面试手册，包含公司调研、自我介绍、问答话术、STAR故事等10大板块</p>
       </div>
 
       {error && (
-        <div className="flex items-center gap-2 bg-red-50 border border-red-200 text-red-700 rounded-lg px-4 py-3 text-sm">
-          <AlertCircle className="w-4 h-4 shrink-0" />{error}
+        <div className="flex items-center justify-between gap-2 bg-red-50 border border-red-200 text-red-700 rounded-lg px-4 py-3 text-sm">
+          <span className="flex items-center gap-2"><AlertCircle className="w-4 h-4 shrink-0" />{error}</span>
+          <button
+            type="button"
+            onClick={() => { setError(''); handleGenerate(); }}
+            className="cursor-pointer shrink-0 rounded-md border border-red-300 bg-white px-3 py-1 text-xs font-medium text-red-600 hover:bg-red-50 transition-colors"
+          >
+            重新生成
+          </button>
         </div>
       )}
 
@@ -311,14 +431,27 @@ export default function InterviewPage() {
               <div className="space-y-2">
                 <Label className="text-sm">选择已解析的 JD</Label>
                 <div className="space-y-1.5 max-h-32 overflow-y-auto">
-                  {savedJDs.map((jd, i) => (
-                    <button type="button" key={i}
-                      onClick={() => { setSelectedJDIndex(i); setCompanyName(jd.companyName || ''); }}
-                      className={`w-full cursor-pointer text-left px-3 py-2 rounded-lg border text-sm font-medium transition-all ${selectedJDIndex === i ? selectedCls : unselectedCls}`}
-                    >
-                      <span className="font-medium">{jd.jobTitle}</span>
-                      {jd.companyName && <span className={selectedJDIndex === i ? 'text-teal-100' : 'text-slate-500'}> @ {jd.companyName}</span>}
-                    </button>
+                  {(savedJDs || []).map((jd, i) => (
+                    <div key={i} className="flex items-stretch">
+                      <button type="button"
+                        onClick={() => { setSelectedJDIndex(i); setCompanyName(jd.companyName || ''); }}
+                        className={`flex-1 cursor-pointer text-left px-3 py-2 rounded-l-lg border text-sm font-medium transition-all ${selectedJDIndex === i ? selectedCls : unselectedCls}`}
+                      >
+                        <span className="font-medium">{jd.jobTitle}</span>
+                        {jd.companyName && <span className={selectedJDIndex === i ? 'text-teal-100' : 'text-slate-500'}> @ {jd.companyName}</span>}
+                      </button>
+                      <button type="button"
+                        onClick={() => handleDeleteJD(i)}
+                        className={`px-2 rounded-r-lg border border-l-0 transition-all cursor-pointer ${
+                          selectedJDIndex === i
+                            ? 'border-teal-600 bg-teal-600 text-white hover:bg-teal-700'
+                            : 'border-slate-200 bg-white text-slate-400 hover:bg-red-50 hover:text-red-500 hover:border-red-200'
+                        }`}
+                        title="删除此记录"
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
+                      </button>
+                    </div>
                   ))}
                 </div>
                 <p className="text-xs text-slate-400">— 或者手动输入新 JD —</p>
@@ -400,14 +533,18 @@ export default function InterviewPage() {
         className="w-full bg-teal-600 hover:bg-teal-700 text-white gap-2 py-6 text-base"
       >
         {isGenerating
-          ? <><div className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin" />正在生成第 {step}/4 段...</>
+          ? <><div className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin" />正在生成面试手册...</>
           : <><BookOpen className="w-5 h-5" />{hasAny ? '重新生成' : '生成面试准备手册'}</>
         }
       </Button>
 
-      {/* Progress bar (visible while generating or just done) */}
-      {(isGenerating || isDone) && (
-        <ProgressBar step={isDone ? 5 : step} totalSteps={4} />
+      {/* Progress bar */}
+      {(isGenerating || hasAny) && (
+        <ProgressBar
+          generatingSectionKey={generatingSectionKey}
+          failedSections={failedSections}
+          prep={prep}
+        />
       )}
 
       {/* Results – appear section by section */}
@@ -432,9 +569,11 @@ export default function InterviewPage() {
           )}
 
           {/* 1. Company Background */}
-          {(prep.companyBackground || (isGenerating && step === 1)) && (
+          {showSection('companyBackground') && (
             <Section icon={<Building2 className="w-4 h-4" />} title="一、公司背景" defaultOpen={true}
-              loading={isGenerating && step === 1 && !prep.companyBackground}
+              loading={generatingSectionKey === 'companyBackground'}
+              failed={failedSections.includes('companyBackground')}
+              onRetry={() => handleRetrySection('companyBackground')}
               copyText={[prep.companyBackground?.overview, prep.companyBackground?.industryPosition, prep.companyBackground?.chinaMarket, prep.companyBackground?.whyHiring].filter(Boolean).join('\n\n')}
             >
               {prep.companyBackground?.overview         && <NarrativeBlock text={prep.companyBackground.overview}         label="公司简介" />}
@@ -445,10 +584,12 @@ export default function InterviewPage() {
           )}
 
           {/* 2. Job Match */}
-          {(prep.jobMatch || (isGenerating && step === 1)) && (
+          {showSection('jobMatch') && (
             <Section icon={<Target className="w-4 h-4" />} title="二、岗位匹配分析"
               badge={prep.jobMatch ? `${(prep.jobMatch.strengthsMatch || []).length} 条优势` : undefined}
-              loading={isGenerating && step === 1 && !prep.jobMatch}
+              loading={generatingSectionKey === 'jobMatch'}
+              failed={failedSections.includes('jobMatch')}
+              onRetry={() => handleRetrySection('jobMatch')}
             >
               {(prep.jobMatch?.strengthsMatch || []).length > 0 && (
                 <div>
@@ -490,9 +631,11 @@ export default function InterviewPage() {
           )}
 
           {/* 3. Self Introduction */}
-          {(prep.selfIntroduction || (isGenerating && step === 1)) && (
+          {showSection('selfIntroduction') && (
             <Section icon={<User className="w-4 h-4" />} title="三、自我介绍（2分钟）"
-              loading={isGenerating && step === 1 && !prep.selfIntroduction}
+              loading={generatingSectionKey === 'selfIntroduction'}
+              failed={failedSections.includes('selfIntroduction')}
+              onRetry={() => handleRetrySection('selfIntroduction')}
               copyText={(prep.selfIntroduction?.chinese || '') + (prep.selfIntroduction?.english ? '\n\n---\n\n' + prep.selfIntroduction.english : '')}
             >
               {prep.selfIntroduction?.chinese && (
@@ -517,10 +660,12 @@ export default function InterviewPage() {
           )}
 
           {/* 4. Core Q&A */}
-          {(prep.coreQA !== undefined || (isGenerating && step === 2)) && (
+          {showSection('coreQA') && (
             <Section icon={<MessageCircle className="w-4 h-4" />} title="四、核心面试问答"
               badge={prep.coreQA ? `${(prep.coreQA || []).length} 题` : undefined}
-              loading={isGenerating && step === 2 && !prep.coreQA}
+              loading={generatingSectionKey === 'coreQA'}
+              failed={failedSections.includes('coreQA')}
+              onRetry={() => handleRetrySection('coreQA')}
             >
               {['general', 'technical', 'behavioral'].map((cat) => {
                 const qs = (prep.coreQA || []).filter((q) => q.category === cat);
@@ -549,16 +694,25 @@ export default function InterviewPage() {
           )}
 
           {/* 5. STAR Stories */}
-          {(prep.starStories !== undefined || (isGenerating && step === 3)) && (
+          {showSection('starStories') && (
             <Section icon={<Star className="w-4 h-4" />} title="五、STAR 故事库"
               badge={prep.starStories ? `${(prep.starStories || []).length} 个故事` : undefined}
-              loading={isGenerating && step === 3 && !prep.starStories}
+              loading={generatingSectionKey === 'starStories'}
+              failed={failedSections.includes('starStories')}
+              onRetry={() => handleRetrySection('starStories')}
             >
               {(prep.starStories || []).map((s, i) => (
                 <div key={s.id || i} className="rounded-lg border border-slate-200 overflow-hidden">
                   <div className="bg-gradient-to-r from-teal-50 to-slate-50 px-3 py-2.5 border-b border-slate-200 flex items-start justify-between gap-2">
                     <div>
-                      <p className="font-semibold text-slate-800 text-sm">{s.title}</p>
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <p className="font-semibold text-slate-800 text-sm">{s.title}</p>
+                        {s.fromUserMaterial && (
+                          <span className="inline-flex items-center gap-1 text-xs font-medium bg-orange-100 text-orange-700 border border-orange-200 rounded-full px-2 py-0.5">
+                            ✦ 来自你的素材
+                          </span>
+                        )}
+                      </div>
                       <div className="flex flex-wrap gap-1 mt-1">
                         {(s.applicableScenarios || []).map((sc, j) => (
                           <Badge key={j} variant="outline" className="text-xs border-teal-200 text-teal-700">{sc}</Badge>
@@ -576,20 +730,31 @@ export default function InterviewPage() {
           )}
 
           {/* 6. AI Capabilities */}
-          {prep.aiCapabilities && (
+          {showSection('aiCapabilities') && (
             <Section icon={<Brain className="w-4 h-4" />} title="六、AI 能力与工具使用"
-              copyText={(prep.aiCapabilities.description || '') + '\n\n' + (prep.aiCapabilities.talkingPoint || '')}
+              loading={generatingSectionKey === 'aiCapabilities'}
+              failed={failedSections.includes('aiCapabilities')}
+              onRetry={() => handleRetrySection('aiCapabilities')}
+              copyText={prep.aiCapabilities ? (prep.aiCapabilities.description || '') + '\n\n' + (prep.aiCapabilities.talkingPoint || '') : undefined}
             >
-              <NarrativeBlock text={prep.aiCapabilities.description} label="背景描述" />
-              <NarrativeBlock text={prep.aiCapabilities.talkingPoint} label="面试参考话术" />
+              {prep.aiCapabilities ? (
+                <>
+                  <NarrativeBlock text={prep.aiCapabilities.description} label="背景描述" />
+                  <NarrativeBlock text={prep.aiCapabilities.talkingPoint} label="面试参考话术" />
+                </>
+              ) : (
+                <p className="text-sm text-slate-400 py-2">JD 或素材中未涉及 AI 工具使用，此板块不适用。</p>
+              )}
             </Section>
           )}
 
           {/* 7. Questions to Ask */}
-          {(prep.questionsToAsk !== undefined || (isGenerating && step === 4)) && (
+          {showSection('questionsToAsk') && (
             <Section icon={<HelpCircle className="w-4 h-4" />} title="七、主动提问清单"
               badge={prep.questionsToAsk ? `${(prep.questionsToAsk || []).length} 个问题` : undefined}
-              loading={isGenerating && step === 4 && !prep.questionsToAsk}
+              loading={generatingSectionKey === 'questionsToAsk'}
+              failed={failedSections.includes('questionsToAsk')}
+              onRetry={() => handleRetrySection('questionsToAsk')}
               copyText={(prep.questionsToAsk || []).map((q, i) => `${i + 1}. ${q}`).join('\n')}
             >
               <div className="space-y-2">
@@ -604,9 +769,11 @@ export default function InterviewPage() {
           )}
 
           {/* 8. Strategy */}
-          {(prep.strategy || (isGenerating && step === 4)) && (
+          {showSection('strategy') && (
             <Section icon={<Lightbulb className="w-4 h-4" />} title="八、面试核心策略"
-              loading={isGenerating && step === 4 && !prep.strategy}
+              loading={generatingSectionKey === 'strategy'}
+              failed={failedSections.includes('strategy')}
+              onRetry={() => handleRetrySection('strategy')}
               copyText={[prep.strategy?.positioning, ...(prep.strategy?.principles || []), prep.strategy?.closingScript].filter(Boolean).join('\n\n')}
             >
               {prep.strategy?.positioning && <NarrativeBlock text={prep.strategy.positioning} label="差异化定位" />}
@@ -628,9 +795,11 @@ export default function InterviewPage() {
           )}
 
           {/* 9. Salary */}
-          {(prep.salaryNegotiation || (isGenerating && step === 4)) && (
+          {showSection('salaryNegotiation') && (
             <Section icon={<TrendingUp className="w-4 h-4" />} title="九、薪资谈判建议"
-              loading={isGenerating && step === 4 && !prep.salaryNegotiation}
+              loading={generatingSectionKey === 'salaryNegotiation'}
+              failed={failedSections.includes('salaryNegotiation')}
+              onRetry={() => handleRetrySection('salaryNegotiation')}
               copyText={[prep.salaryNegotiation?.marketRange, ...(prep.salaryNegotiation?.strategies || [])].filter(Boolean).join('\n\n')}
             >
               {prep.salaryNegotiation?.marketRange && <NarrativeBlock text={prep.salaryNegotiation.marketRange} label="市场薪资参考" />}
@@ -651,9 +820,11 @@ export default function InterviewPage() {
           )}
 
           {/* 10. Warnings */}
-          {(prep.warningsAndTraps || (isGenerating && step === 4)) && (
+          {showSection('warningsAndTraps') && (
             <Section icon={<ShieldAlert className="w-4 h-4" />} title="十、注意事项与常见陷阱"
-              loading={isGenerating && step === 4 && !prep.warningsAndTraps}
+              loading={generatingSectionKey === 'warningsAndTraps'}
+              failed={failedSections.includes('warningsAndTraps')}
+              onRetry={() => handleRetrySection('warningsAndTraps')}
               copyText={[...(prep.warningsAndTraps?.traps || []), ...(prep.warningsAndTraps?.avoidPhrases || [])].join('\n')}
             >
               {(prep.warningsAndTraps?.traps || []).length > 0 && (
@@ -685,13 +856,22 @@ export default function InterviewPage() {
             </Section>
           )}
 
-          {/* Refine - only when fully done */}
+          {/* Refine - only when done generating */}
           {isDone && (
             <RefineInput
               currentContent={fullContent}
               contentType="interview"
               onRefined={(refined) => {
-                try { setPrep(JSON.parse(refined)); } catch {}
+                try {
+                  const updates = JSON.parse(refined) as Partial<InterviewPrep>;
+                  if (!updates || typeof updates !== 'object' || Object.keys(updates).length === 0) {
+                    showToast('未检测到有效修改', 'error');
+                    return;
+                  }
+                  setPrep((p) => ({ ...p, ...updates }));
+                } catch {
+                  showToast('AI 返回格式有误，请重试', 'error');
+                }
               }}
             />
           )}

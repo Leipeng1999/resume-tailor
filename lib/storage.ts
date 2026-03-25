@@ -73,6 +73,23 @@ export function saveCurrentResume(content: string): void {
   localStorage.setItem(CURRENT_RESUME_KEY, content);
 }
 
+export function deleteParsedJD(index: number): void {
+  if (typeof window === 'undefined') return;
+  const jds = getParsedJDs();
+  jds.splice(index, 1);
+  localStorage.setItem(PARSED_JDS_KEY, JSON.stringify(jds));
+}
+
+export function clearAllParsedJDs(): void {
+  if (typeof window === 'undefined') return;
+  localStorage.setItem(PARSED_JDS_KEY, JSON.stringify([]));
+}
+
+export function clearAllHistory(): void {
+  if (typeof window === 'undefined') return;
+  localStorage.setItem(HISTORY_KEY, JSON.stringify([]));
+}
+
 export function generateId(): string {
   return Date.now().toString(36) + Math.random().toString(36).substr(2);
 }

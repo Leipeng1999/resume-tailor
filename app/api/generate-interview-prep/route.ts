@@ -3,42 +3,19 @@ import { callClaude } from '@/lib/claude';
 import { parseJsonWithFallback } from '@/lib/jsonParser';
 import { ParsedJD, InterviewRound } from '@/lib/types';
 
-// ── Types for each segment ────────────────────────────────
-type Seg1 = {
-  companyBackground: { overview: string; industryPosition: string; chinaMarket: string; whyHiring: string };
-  jobMatch: {
-    strengthsMatch: { strength: string; jobRequirement: string }[];
-    weaknesses: { weakness: string; strategy: string; talkingPoint: string }[];
-  };
-  selfIntroduction: { chinese: string; english: string };
-};
+const JSON_SYSTEM = '你必须且只能返回合法的 JSON，不要包含任何 markdown 标记、代码块标记或其他非 JSON 内容。';
 
-type Seg2 = {
-  coreQA: { id: string; category: string; question: string; answer: string }[];
-};
-
-type Seg3 = {
-  starStories: { id: string; title: string; story: string; applicableScenarios: string[] }[];
-  aiCapabilities: { description: string; talkingPoint: string } | null;
-};
-
-type Seg4 = {
-  questionsToAsk: string[];
-  strategy: { positioning: string; principles: string[]; closingScript: string };
-  salaryNegotiation: { marketRange: string; strategies: string[] };
-  warningsAndTraps: { traps: string[]; avoidPhrases: string[] };
-};
+export type SectionKey =
+  | 'companyBackground' | 'jobMatch' | 'selfIntroduction' | 'coreQA'
+  | 'starStories' | 'aiCapabilities' | 'questionsToAsk' | 'strategy'
+  | 'salaryNegotiation' | 'warningsAndTraps';
 
 // ── Retry wrapper (max 2 attempts) ────────────────────────
-async function callWithRetry<T>(
-  prompt: string,
-  apiKey: string,
-  label: string,
-): Promise<T> {
+async function callWithRetry<T>(prompt: string, apiKey: string, label: string): Promise<T> {
   let lastErr: unknown;
   for (let attempt = 1; attempt <= 2; attempt++) {
     try {
-      const raw = await callClaude(prompt, undefined, apiKey, 4096);
+      const raw = await callClaude(prompt, JSON_SYSTEM, apiKey, 4096);
       return await parseJsonWithFallback<T>(raw, apiKey, label);
     } catch (e) {
       lastErr = e;
@@ -55,6 +32,7 @@ function buildContext(
   roundLabel: string,
   interviewerTitle: string,
   prepFiles?: string,
+  completedSectionTitles?: string[],
 ) {
   return `## 岗位信息
 - 公司：${company}
@@ -63,14 +41,13 @@ function buildContext(
 - 面试官职位：${interviewerTitle || '未指定'}
 - 核心技能要求：${(parsedJD.coreSkills || []).join('、') || '未指定'}
 - 行业关键词：${(parsedJD.industryKeywords || []).join('、') || '未指定'}
-- JD原文：${parsedJD.rawText ? parsedJD.rawText.slice(0, 800) : '未提供'}
-${prepFiles ? `\n## 我的面试准备素材\n${prepFiles.slice(0, 600)}` : ''}
+- JD原文：${parsedJD.rawText ? parsedJD.rawText.slice(0, 1500) : '未提供'}
+${prepFiles ? `\n## 用户面试素材（真实经历，优先使用）\n【重要】以下是用户提供的真实工作经历，必须优先基于这些素材生成内容，不要编造不存在的经历。\n${prepFiles.slice(0, 3000)}` : ''}
+${completedSectionTitles?.length ? `\n## 已生成板块（了解整体结构，避免重复）\n${completedSectionTitles.join('、')}` : ''}
 
-## 语言风格（全程遵守）
-- 口语化叙事，用第一人称"我"，像面对面说话
-- 有起承转合，不用 bullet point 罗列
-- 可以有过渡词（"这件事要从...说起"、"当时的情况是"、"结果怎么样呢"）
-- 每个回答都是完整段落，可直接练习说出来`;
+## 语言风格
+- 口语化叙事，第一人称"我"，像面对面说话
+- 完整段落，可直接练习说出来，不用 bullet point 罗列`;
 }
 
 // ── Route Handler ─────────────────────────────────────────
@@ -83,7 +60,8 @@ export async function POST(req: NextRequest) {
       interviewRound,
       interviewerTitle,
       apiKey,
-      segment,
+      section,
+      completedSectionTitles,
     }: {
       parsedJD: ParsedJD;
       prepFiles?: string;
@@ -91,7 +69,8 @@ export async function POST(req: NextRequest) {
       interviewRound?: InterviewRound;
       interviewerTitle?: string;
       apiKey?: string;
-      segment: 1 | 2 | 3 | 4;
+      section: SectionKey;
+      completedSectionTitles?: string[];
     } = await req.json();
 
     if (!parsedJD) return NextResponse.json({ error: '请提供 JD 信息' }, { status: 400 });
@@ -100,95 +79,98 @@ export async function POST(req: NextRequest) {
     const roundMap: Record<string, string> = { hr: 'HR 面试', technical: '技术面试', final: '终面' };
     const company    = companyName || parsedJD.companyName || '目标公司';
     const roundLabel = interviewRound ? roundMap[interviewRound] : '未指定';
-    const ctx        = buildContext(parsedJD, company, roundLabel, interviewerTitle || '', prepFiles);
+    const ctx        = buildContext(parsedJD, company, roundLabel, interviewerTitle || '', prepFiles, completedSectionTitles);
+    const hasMaterial = !!(prepFiles?.trim());
 
-    // ── Segment 1: Company + JobMatch + SelfIntro ─────────
-    if (segment === 1) {
-      const prompt = `你是资深职业面试教练。根据以下信息生成面试准备手册第一部分。
+    switch (section) {
+
+      // ── 1. Company Background ──────────────────────────
+      case 'companyBackground': {
+        const prompt = `你是资深职业面试教练。根据以下信息生成公司背景分析。
 
 ${ctx}
 
 只返回如下 JSON，不要任何其他文字：
 {
   "companyBackground": {
-    "overview": "公司简介：历史、规模、核心业务，200字以内",
-    "industryPosition": "行业定位与近期动态，150字以内",
-    "chinaMarket": "中国市场布局，100字以内",
-    "whyHiring": "推测为何招聘此岗位，80字以内"
-  },
+    "overview": "公司简介：历史、规模、核心业务，150字以内",
+    "industryPosition": "行业定位与近期动态，100字以内",
+    "chinaMarket": "中国市场布局，80字以内",
+    "whyHiring": "推测为何招聘此岗位，60字以内"
+  }
+}`;
+        const data = await callWithRetry<{ companyBackground: unknown }>(prompt, apiKey, 'companyBackground');
+        return NextResponse.json({ companyBackground: data.companyBackground });
+      }
+
+      // ── 2. Job Match ───────────────────────────────────
+      case 'jobMatch': {
+        const prompt = `你是资深职业面试教练。根据以下信息生成岗位匹配分析。
+
+${ctx}
+
+只返回如下 JSON，不要任何其他文字：
+{
   "jobMatch": {
     "strengthsMatch": [
-      { "strength": "我的一个优势（30字以内）", "jobRequirement": "对应的JD要求（20字以内）" }
+      { "strength": "我的优势（30字以内）", "jobRequirement": "对应JD要求（20字以内）" }
     ],
     "weaknesses": [
-      {
-        "weakness": "一个潜在劣势（20字以内）",
-        "strategy": "应对策略（30字以内）",
-        "talkingPoint": "面试中可以这样说（口语化段落，100字以内）"
-      }
+      { "weakness": "潜在劣势（20字以内）", "strategy": "应对策略（30字以内）", "talkingPoint": "面试话术（80字以内）" }
     ]
-  },
-  "selfIntroduction": {
-    "chinese": "2分钟中文自我介绍，口语化，融入与JD匹配的亮点，300字以内",
-    "english": "2-minute English self-introduction, conversational, under 250 words"
   }
 }
 
-要求：strengthsMatch 3-4条，weaknesses 2条，selfIntroduction 中英文各一版。`;
+要求：strengthsMatch 生成 3-4 条，weaknesses 生成 2 条。`;
+        const data = await callWithRetry<{ jobMatch: unknown }>(prompt, apiKey, 'jobMatch');
+        return NextResponse.json({ jobMatch: data.jobMatch });
+      }
 
-      const data = await callWithRetry<Seg1>(prompt, apiKey, 'seg1');
-      return NextResponse.json({
-        companyBackground: {
-          overview:         data.companyBackground?.overview || '',
-          industryPosition: data.companyBackground?.industryPosition || '',
-          chinaMarket:      data.companyBackground?.chinaMarket || '',
-          whyHiring:        data.companyBackground?.whyHiring || '',
-        },
-        jobMatch: {
-          strengthsMatch: data.jobMatch?.strengthsMatch || [],
-          weaknesses:     data.jobMatch?.weaknesses || [],
-        },
-        selfIntroduction: {
-          chinese: data.selfIntroduction?.chinese || '',
-          english: data.selfIntroduction?.english || '',
-        },
-      });
-    }
+      // ── 3. Self Introduction ──────────────────────────
+      case 'selfIntroduction': {
+        const prompt = `你是资深职业面试教练。根据以下信息生成自我介绍。
 
-    // ── Segment 2: Core Q&A ───────────────────────────────
-    if (segment === 2) {
-      const prompt = `你是资深职业面试教练。根据以下信息生成面试问答。
+${ctx}
+
+只返回如下 JSON，不要任何其他文字：
+{
+  "selfIntroduction": {
+    "chinese": "2分钟中文自我介绍，口语化，融入与JD匹配的亮点，250字以内",
+    "english": "2-minute English self-introduction, conversational, highlight JD-matching strengths, under 200 words"
+  }
+}`;
+        const data = await callWithRetry<{ selfIntroduction: unknown }>(prompt, apiKey, 'selfIntroduction');
+        return NextResponse.json({ selfIntroduction: data.selfIntroduction });
+      }
+
+      // ── 4. Core Q&A ────────────────────────────────────
+      case 'coreQA': {
+        const prompt = `你是资深职业面试教练。根据以下信息生成核心面试问答。
 
 ${ctx}
 
 只返回如下 JSON，不要任何其他文字：
 {
   "coreQA": [
-    {
-      "id": "q1",
-      "category": "general",
-      "question": "面试问题",
-      "answer": "口语化参考话术，完整段落，150字以内"
-    }
+    { "id": "q1", "category": "general", "question": "面试问题", "answer": "口语化参考话术，120字以内" }
   ]
 }
 
 category 只能是 "general"、"technical" 或 "behavioral"。
-要求生成 8-9 个问题：
-- general 3个：为什么选这家公司、职业规划、为什么离职/转行（根据情况选择）
-- technical 2-3个：根据JD核心技能针对性出题
-- behavioral 3个：STAR格式行为面试题（如：处理冲突、跨部门合作、高压下完成任务）
-每个 answer 都是可以直接说出来的口语化段落，不要用要点罗列。`;
+生成 8 个问题：general 3个（为什么选这家公司、职业规划、离职原因）、technical 2-3个（根据JD核心技能）、behavioral 3个（STAR行为面试题）。
+每个 answer 是可直接说出的口语化段落，不用要点罗列。
+${hasMaterial ? '【重要】behavioral 问题的 answer 中，优先融入用户提供的真实经历，不要编造。' : ''}`;
+        const data = await callWithRetry<{ coreQA: unknown }>(prompt, apiKey, 'coreQA');
+        return NextResponse.json({ coreQA: data.coreQA });
+      }
 
-      const data = await callWithRetry<Seg2>(prompt, apiKey, 'seg2');
-      return NextResponse.json({ coreQA: data.coreQA || [] });
-    }
-
-    // ── Segment 3: STAR Stories + AI Capabilities ─────────
-    if (segment === 3) {
-      const prompt = `你是资深职业面试教练。根据以下信息生成STAR故事库。
+      // ── 5. STAR Stories ────────────────────────────────
+      case 'starStories': {
+        const prompt = `你是资深职业面试教练。根据以下信息生成 STAR 故事库。
 
 ${ctx}
+
+${hasMaterial ? `【核心要求】用户提供了真实工作经历素材，必须直接从素材中提取故事改写为 STAR 格式（背景→任务→行动→结果），保持故事真实性，fromUserMaterial 设为 true。不要编造用户没有的经历。` : ''}
 
 只返回如下 JSON，不要任何其他文字：
 {
@@ -196,77 +178,121 @@ ${ctx}
     {
       "id": "s1",
       "title": "故事标题（15字以内）",
-      "story": "完整STAR故事：背景→任务→行动→结果，口语化叙事，第一人称，250字以内",
-      "applicableScenarios": ["适用场景1", "适用场景2"]
+      "story": "完整STAR故事，口语化叙事，第一人称，200字以内",
+      "applicableScenarios": ["适用场景1", "适用场景2"],
+      "fromUserMaterial": ${hasMaterial ? 'true' : 'false'}
     }
-  ],
-  "aiCapabilities": null
+  ]
 }
 
-要求：
-- starStories 生成 3-4 个故事，如有用户素材优先使用真实经历，否则根据岗位推测典型场景
-- 每个故事要有具体细节和数字结果，不要泛泛而谈
-- aiCapabilities：如果素材或JD中提到AI/LLM工具使用经验则填写，否则返回 null
-  格式：{ "description": "背景描述（100字以内）", "talkingPoint": "面试话术（100字以内）" }`;
+要求：生成 3 个故事，每个故事要有具体细节和数字结果，不要泛泛而谈。`;
+        const data = await callWithRetry<{ starStories: unknown }>(prompt, apiKey, 'starStories');
+        return NextResponse.json({ starStories: data.starStories });
+      }
 
-      const data = await callWithRetry<Seg3>(prompt, apiKey, 'seg3');
-      return NextResponse.json({
-        starStories:    data.starStories || [],
-        aiCapabilities: data.aiCapabilities || null,
-      });
-    }
+      // ── 6. AI Capabilities ─────────────────────────────
+      case 'aiCapabilities': {
+        const prompt = `你是资深职业面试教练。根据以下信息判断是否有 AI/LLM 工具使用经验，并生成相应内容。
 
-    // ── Segment 4: Questions + Strategy + Salary + Warnings
-    if (segment === 4) {
-      const prompt = `你是资深职业面试教练。根据以下信息生成面试策略与建议。
+${ctx}
+
+判断标准：JD 中提到 AI/LLM/大模型/数据分析工具，或用户素材中有相关工具使用经历，则填写内容；否则返回 null。
+
+只返回如下 JSON，不要任何其他文字：
+{
+  "aiCapabilities": {
+    "description": "AI工具使用背景描述，80字以内",
+    "talkingPoint": "面试参考话术，口语化，80字以内"
+  }
+}
+
+如无相关内容，返回：{ "aiCapabilities": null }`;
+        const data = await callWithRetry<{ aiCapabilities: unknown }>(prompt, apiKey, 'aiCapabilities');
+        return NextResponse.json({ aiCapabilities: data.aiCapabilities ?? null });
+      }
+
+      // ── 7. Questions to Ask ────────────────────────────
+      case 'questionsToAsk': {
+        const prompt = `你是资深职业面试教练。根据以下信息生成主动提问清单。
 
 ${ctx}
 
 只返回如下 JSON，不要任何其他文字：
 {
   "questionsToAsk": [
-    "针对公司和岗位的高质量反问问题（一句话，不要通用问题）"
-  ],
+    "针对公司和岗位的高质量反问（一句话，不要通用问题，要有针对性）"
+  ]
+}
+
+要求：生成 8 个问题，涵盖团队氛围、成长路径、岗位期望、公司战略等维度，每个问题针对该公司/岗位个性化，不要使用"贵公司"等通用说法。`;
+        const data = await callWithRetry<{ questionsToAsk: unknown }>(prompt, apiKey, 'questionsToAsk');
+        return NextResponse.json({ questionsToAsk: data.questionsToAsk });
+      }
+
+      // ── 8. Strategy ────────────────────────────────────
+      case 'strategy': {
+        const prompt = `你是资深职业面试教练。根据以下信息生成面试核心策略。
+
+${ctx}
+
+只返回如下 JSON，不要任何其他文字：
+{
   "strategy": {
-    "positioning": "差异化定位：你的核心竞争优势是什么，100字以内",
+    "positioning": "差异化定位：你的核心竞争优势，80字以内",
     "principles": ["核心原则1（一句话）", "核心原则2", "核心原则3"],
-    "closingScript": "面试结尾推进话术，口语化，80字以内"
-  },
-  "salaryNegotiation": {
-    "marketRange": "该岗位市场薪资范围（如：月薪20-35K，年包25-45万）",
-    "strategies": ["谈判策略1（一句话）", "策略2", "策略3"]
-  },
-  "warningsAndTraps": {
-    "traps": ["陷阱问题1（一句话描述）", "陷阱2", "陷阱3"],
-    "avoidPhrases": ["避免说的话1", "避免表达2", "避免表达3"]
+    "closingScript": "面试结尾推进话术，口语化，60字以内"
   }
 }
 
-要求：questionsToAsk 8-10个，涵盖团队氛围、成长路径、岗位期望、公司战略等维度。`;
+要求：principles 3-4 条，实用且具体。`;
+        const data = await callWithRetry<{ strategy: unknown }>(prompt, apiKey, 'strategy');
+        return NextResponse.json({ strategy: data.strategy });
+      }
 
-      const data = await callWithRetry<Seg4>(prompt, apiKey, 'seg4');
-      return NextResponse.json({
-        questionsToAsk: data.questionsToAsk || [],
-        strategy: {
-          positioning:  data.strategy?.positioning || '',
-          principles:   data.strategy?.principles || [],
-          closingScript: data.strategy?.closingScript || '',
-        },
-        salaryNegotiation: {
-          marketRange: data.salaryNegotiation?.marketRange || '',
-          strategies:  data.salaryNegotiation?.strategies || [],
-        },
-        warningsAndTraps: {
-          traps:        data.warningsAndTraps?.traps || [],
-          avoidPhrases: data.warningsAndTraps?.avoidPhrases || [],
-        },
-      });
+      // ── 9. Salary Negotiation ──────────────────────────
+      case 'salaryNegotiation': {
+        const prompt = `你是资深职业面试教练。根据以下信息生成薪资谈判建议。
+
+${ctx}
+
+只返回如下 JSON，不要任何其他文字：
+{
+  "salaryNegotiation": {
+    "marketRange": "该岗位市场薪资范围（如：月薪20-35K，年包25-45万）",
+    "strategies": ["谈判策略1（一句话，实用具体）", "策略2", "策略3"]
+  }
+}
+
+要求：marketRange 给出合理区间，strategies 3-4 条，针对该岗位特点。`;
+        const data = await callWithRetry<{ salaryNegotiation: unknown }>(prompt, apiKey, 'salaryNegotiation');
+        return NextResponse.json({ salaryNegotiation: data.salaryNegotiation });
+      }
+
+      // ── 10. Warnings & Traps ───────────────────────────
+      case 'warningsAndTraps': {
+        const prompt = `你是资深职业面试教练。根据以下信息生成注意事项与常见陷阱。
+
+${ctx}
+
+只返回如下 JSON，不要任何其他文字：
+{
+  "warningsAndTraps": {
+    "traps": ["陷阱问题1（一句话描述该问题的风险）", "陷阱2", "陷阱3"],
+    "avoidPhrases": ["避免说的话1（具体说明为什么避免）", "避免表达2", "避免表达3"]
+  }
+}
+
+要求：traps 3-4 条，avoidPhrases 3-4 条，针对此类岗位的典型陷阱，不要泛泛而谈。`;
+        const data = await callWithRetry<{ warningsAndTraps: unknown }>(prompt, apiKey, 'warningsAndTraps');
+        return NextResponse.json({ warningsAndTraps: data.warningsAndTraps });
+      }
+
+      default:
+        return NextResponse.json({ error: '无效的 section 参数' }, { status: 400 });
     }
-
-    return NextResponse.json({ error: '无效的 segment 参数' }, { status: 400 });
   } catch (error: unknown) {
     console.error('generate-interview-prep error:', error);
     const message = error instanceof Error ? error.message : 'Unknown error';
-    return NextResponse.json({ error: `生成失败: ${message}` }, { status: 500 });
+    return NextResponse.json({ error: `生成失败: ${message}，请重试` }, { status: 500 });
   }
 }

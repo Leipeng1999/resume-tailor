@@ -3,6 +3,8 @@ import { callClaude } from '@/lib/claude';
 import { parseJsonWithFallback } from '@/lib/jsonParser';
 import { ParsedJD, MatchScore } from '@/lib/types';
 
+const JSON_SYSTEM = '你必须且只能返回合法的 JSON，不要包含任何 markdown 标记、代码块标记或其他非 JSON 内容。';
+
 export async function POST(req: NextRequest) {
   try {
     const { resumeText, parsedJD, apiKey }: { resumeText: string; parsedJD: ParsedJD; apiKey?: string } =
@@ -41,13 +43,13 @@ ${resumeText}
 - missingKeywords: JD中要求但简历中缺失的关键词
 - atsIssues: 影响ATS通过率的格式或关键词问题`;
 
-    const response = await callClaude(prompt, undefined, apiKey);
+    const response = await callClaude(prompt, JSON_SYSTEM, apiKey);
 
     const score = await parseJsonWithFallback<MatchScore>(response, apiKey, 'match-score');
     return NextResponse.json(score);
   } catch (error: unknown) {
     console.error('match-score error:', error);
     const message = error instanceof Error ? error.message : 'Unknown error';
-    return NextResponse.json({ error: `评分失败: ${message}` }, { status: 500 });
+    return NextResponse.json({ error: `评分失败: ${message}，请重试` }, { status: 500 });
   }
 }

@@ -3,6 +3,8 @@ import { callClaude } from '@/lib/claude';
 import { parseJsonWithFallback } from '@/lib/jsonParser';
 import { ParsedJD, TailoredResume, ResumeDiff } from '@/lib/types';
 
+const JSON_SYSTEM = '你必须且只能返回合法的 JSON，不要包含任何 markdown 标记、代码块标记或其他非 JSON 内容。';
+
 export async function POST(req: NextRequest) {
   try {
     const { resumeText, parsedJD, apiKey }: { resumeText: string; parsedJD: ParsedJD; apiKey?: string } =
@@ -53,7 +55,7 @@ ${resumeText}
   "suggestions": ["还可以补充的内容建议1", "建议2", "建议3"]
 }`;
 
-    const response = await callClaude(prompt, undefined, apiKey);
+    const response = await callClaude(prompt, JSON_SYSTEM, apiKey);
 
     const result = await parseJsonWithFallback<{
       tailoredContent: string;
@@ -76,6 +78,6 @@ ${resumeText}
   } catch (error: unknown) {
     console.error('tailor-resume error:', error);
     const message = error instanceof Error ? error.message : 'Unknown error';
-    return NextResponse.json({ error: `简历定制失败: ${message}` }, { status: 500 });
+    return NextResponse.json({ error: `简历定制失败: ${message}，请重试` }, { status: 500 });
   }
 }

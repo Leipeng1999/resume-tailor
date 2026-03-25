@@ -10,8 +10,8 @@ import RefineInput from '@/components/RefineInput';
 import { LoadingSpinner } from '@/components/Loadingskeleton';
 import { showToast } from '@/components/Toast';
 import { MessageChannel, MessageLanguage, MessageTone, GeneratedMessage, ParsedJD } from '@/lib/types';
-import { getApiKey, getCurrentResume, getParsedJDs } from '@/lib/storage';
-import { MessageSquare, Send, AlertCircle, CheckCircle2, Link2 } from 'lucide-react';
+import { getApiKey, getCurrentResume, getParsedJDs, deleteParsedJD } from '@/lib/storage';
+import { MessageSquare, Send, AlertCircle, CheckCircle2, Link2, X } from 'lucide-react';
 
 const channels: { value: MessageChannel; label: string; desc: string; emoji: string }[] = [
   { value: 'linkedin', label: 'LinkedIn',  desc: 'Connection + InMail', emoji: '💼' },
@@ -62,6 +62,17 @@ export default function MessagePage() {
     } else {
       setJdText('');
     }
+  };
+
+  const handleDeleteJD = (index: number) => {
+    const jd = savedJDs[index];
+    if (!confirm(`确认删除 ${jd.companyName ? jd.companyName + ' - ' : ''}${jd.jobTitle} 的记录？`)) return;
+    deleteParsedJD(index);
+    const newJDs = getParsedJDs();
+    setSavedJDs(newJDs);
+    if (linkedJDIndex === index) { setLinkedJDIndex(-1); setJdText(''); }
+    else if (linkedJDIndex > index) { setLinkedJDIndex(linkedJDIndex - 1); }
+    showToast('JD 记录已删除', 'success');
   };
 
   const handleGenerate = async () => {
@@ -118,8 +129,15 @@ export default function MessagePage() {
       </div>
 
       {error && (
-        <div className="flex items-center gap-2 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
-          <AlertCircle className="h-4 w-4 shrink-0" />{error}
+        <div className="flex items-center justify-between gap-2 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+          <span className="flex items-center gap-2"><AlertCircle className="h-4 w-4 shrink-0" />{error}</span>
+          <button
+            type="button"
+            onClick={() => { setError(''); handleGenerate(); }}
+            className="cursor-pointer shrink-0 rounded-md border border-red-300 bg-white px-3 py-1 text-xs font-medium text-red-600 hover:bg-red-50 transition-colors"
+          >
+            重试
+          </button>
         </div>
       )}
 
@@ -142,17 +160,30 @@ export default function MessagePage() {
               >
                 不关联，手动输入
               </button>
-              {savedJDs.map((jd, i) => (
-                <button
-                  type="button"
-                  key={i}
-                  onClick={() => handleLinkJD(i)}
-                  className={`px-3 py-1.5 rounded-lg border text-xs font-medium transition-all cursor-pointer ${
-                    linkedJDIndex === i ? selectedCls : unselectedCls
-                  }`}
-                >
-                  {jd.companyName ? `${jd.companyName} - ` : ''}{jd.jobTitle}
-                </button>
+              {(savedJDs || []).map((jd, i) => (
+                <div key={i} className="flex items-center">
+                  <button
+                    type="button"
+                    onClick={() => handleLinkJD(i)}
+                    className={`px-3 py-1.5 rounded-l-lg border text-xs font-medium transition-all cursor-pointer ${
+                      linkedJDIndex === i ? selectedCls : unselectedCls
+                    }`}
+                  >
+                    {jd.companyName ? `${jd.companyName} - ` : ''}{jd.jobTitle}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleDeleteJD(i)}
+                    className={`px-1.5 py-1.5 rounded-r-lg border border-l-0 text-xs font-medium transition-all cursor-pointer ${
+                      linkedJDIndex === i
+                        ? 'border-teal-600 bg-teal-600 text-white hover:bg-teal-700'
+                        : 'border-slate-200 bg-white text-slate-400 hover:bg-red-50 hover:text-red-500 hover:border-red-200'
+                    }`}
+                    title="删除此记录"
+                  >
+                    <X className="h-3 w-3" />
+                  </button>
+                </div>
               ))}
             </div>
             {linkedJD && (

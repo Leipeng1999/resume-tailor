@@ -54,6 +54,7 @@ export interface StarStory {
   title: string;
   story: string;
   applicableScenarios: string[];
+  fromUserMaterial?: boolean;
 }
 
 export interface InterviewPrep {
